@@ -1,4 +1,4 @@
-json{
+{
   "name": "logistics-watcher",
   "version": "1.0.0",
   "type": "module",
@@ -10,10 +10,10 @@ json{
     "@google/generative-ai": "^0.24.1",
     "@slack/web-api": "^7.9.3",
     "dotenv": "^17.2.1",
-    "express": "^5.1.0",
+    "express": "^5.0.1",
     "monday-sdk-js": "^0.5.6"
   },
   "engines": {
-    "node": "18.x"
+    "node": ">=18"
   }
 }
