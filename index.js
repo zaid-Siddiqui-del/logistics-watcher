@@ -536,14 +536,19 @@ async function analyzeIssue(updateText) {
     };
   }
   
-  if (text.includes("delivery attempted") || text.includes("recipient unavailable") || text.includes("premises closed")) {
+  // ADD THIS NEW BLOCK HERE:
+  if (text.includes("on hold") || text.includes("shipment on hold")) {
     return {
-      type: "experiencing delivery failure",
-      severity: "high", 
-      reason: "Failed delivery attempt",
+      type: "shipment on hold",
+      severity: "high",
+      reason: "Shipment placed on hold by carrier - immediate attention required",
       carrier: carrier,
       route: carrier === "UPS" ? "India-UK" : "China-UK"
     };
+  }
+  
+  if (text.includes("delivery attempted") || text.includes("recipient unavailable") || text.includes("premises closed")) {
+    // ... existing delivery code
   }
   
   return null;
@@ -657,3 +662,4 @@ app.get("/test", (req, res) => {
 app.listen(PORT, () => {
   console.log(`Watcher listening on ${PORT}`);
 });
+
