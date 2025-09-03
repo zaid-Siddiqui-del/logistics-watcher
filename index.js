@@ -526,7 +526,7 @@ async function analyzeIssue(updateText) {
   
   if (text.includes("delivered")) return null;
   
-  if (text.includes("held by customs") || text.includes("document required")) {
+  if (text.includes("held by customs") || text.includes("document required") || text.includes("on hold")) {
     return {
       type: "held in customs",
       severity: "high",
