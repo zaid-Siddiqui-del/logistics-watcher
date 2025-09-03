@@ -49,7 +49,7 @@ const genAI = GEMINI_API_KEY ? new GoogleGenerativeAI(GEMINI_API_KEY) : null;
 // Configure Gmail SMTP
 let transporter = null;
 if (GMAIL_USER && GMAIL_APP_PASSWORD) {
-  transporter = nodemailer.createTransporter({
+  transporter = nodemailer.createTransport({
     service: 'gmail',
     auth: {
       user: GMAIL_USER,
