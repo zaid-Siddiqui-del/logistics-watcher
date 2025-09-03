@@ -10,13 +10,11 @@ dotenv.config();
 const {
   PORT = 3000,
   MONDAY_TOKEN,
-  MONDAY_BOARD_ID,
   SLACK_BOT_TOKEN,
   SLACK_CHANNEL_ID,
   GEMINI_API_KEY,
   DEBUG: DEBUG_RAW = "false",
   ALWAYS_ALERT: ALWAYS_ALERT_RAW = "false",
-  LATEST_UPDATE_COLUMN_ID,
   RACHEL_USER_ID = "D08MAQ61878",
   HARITHA_USER_ID = "D08HQ5GQCAW",
   HUBSPOT_API_KEY,
@@ -32,7 +30,7 @@ console.log("Environment check:");
 console.log("DEBUG:", DEBUG);
 console.log("GMAIL_USER configured:", !!GMAIL_USER);
 
-if (!MONDAY_TOKEN || !MONDAY_BOARD_ID || !SLACK_BOT_TOKEN || !SLACK_CHANNEL_ID) {
+if (!MONDAY_TOKEN || !SLACK_BOT_TOKEN || !SLACK_CHANNEL_ID) {
   console.error("Missing required environment variables");
   process.exit(1);
 }
@@ -62,6 +60,58 @@ if (GMAIL_USER && GMAIL_APP_PASSWORD) {
   console.log("Gmail credentials not configured - email notifications disabled");
 }
 
+// Multi-board configuration
+const BOARD_CONFIGS = {
+  "9371038978": { // India Board
+    name: "India",
+    region: "INDIA",
+    coordinator: `<@${HARITHA_USER_ID}>`,
+    columns: {
+      region: "status77",
+      customerName: "text1",
+      companyName: "text3", 
+      customerTracking: "text_mkvcce8m",
+      latestUpdate: "text_mkvc93tw",
+      latestLocation: "text_mkvcg0xs",
+      latestUpdateDate: "date_mkvey807",
+      transitStatus: "color_mkvew24q",
+      partNumber: "text0"
+    }
+  },
+  "9371042358": { // Portugal Board
+    name: "Portugal", 
+    region: "PORTUGAL",
+    coordinator: null, // No tagging for Portugal
+    columns: {
+      region: "status77",
+      companyName: "text3",
+      customerTracking: "text_mkvc9fc5", 
+      customerName: "text1",
+      latestUpdateDate: "date_mkvc9ja0",
+      latestUpdate: "text_mkvccynd",
+      latestLocation: "text_mkvcna6n",
+      transitStatus: "color_mkvedscf",
+      partNumber: "text0"
+    }
+  },
+  "9371034380": { // China Board
+    name: "China",
+    region: "CHINA", 
+    coordinator: `<@${RACHEL_USER_ID}>`,
+    columns: {
+      region: "status77",
+      companyName: "text3",
+      customerName: "text1",
+      customerTracking: "text_mkvcdqrw",
+      latestUpdate: "text_mkvcmtre", 
+      latestLocation: "text_mkvc8tw8",
+      latestUpdateDate: "date_mkvcbzsv",
+      transitStatus: "color_mkvev72x",
+      partNumber: "text0"
+    }
+  }
+};
+
 const recentAlerts = new Map();
 const updateHistory = new Map();
 const ambiguousStatusHistory = new Map();
@@ -70,7 +120,6 @@ const AMBIGUOUS_STATUSES = {
   "clearance event": { hours: 18 },
   "customs clearance": { hours: 18 },
   "processing": { hours: 24 },
-  "on hold": { hours: 6 },
   "exception": { hours: 12 },
   "clearance processing": { hours: 18 }
 };
@@ -86,6 +135,15 @@ const CUSTOMER_NOTIFICATION_PATTERNS = {
   refusedDelivery: /(refused delivery|delivery refused|consignee refused)/i,
   incorrectAddress: /(address incorrect|incorrect address|address insufficient|invalid address)/i
 };
+
+function getBoardConfig(boardId) {
+  const config = BOARD_CONFIGS[String(boardId)];
+  if (!config) {
+    console.error(`No configuration found for board ID: ${boardId}`);
+    return null;
+  }
+  return config;
+}
 
 function checkAmbiguousStatus(itemId, updateText) {
   const now = Date.now();
@@ -149,33 +207,25 @@ function checkAmbiguousStatus(itemId, updateText) {
   return null;
 }
 
-function getLogisticsCoordinator(itemDetails, carrier) {
-  // Get region from Monday board (status77 column)
-  const region = itemDetails?.columnMap?.status77;
+function checkStuckStatus(itemDetails, boardConfig) {
+  const transitStatusColumn = boardConfig.columns.transitStatus;
+  const transitStatus = itemDetails?.columnMap?.[transitStatusColumn];
   
-  if (region) {
-    const upperRegion = region.toUpperCase();
-    console.log(`Region found: ${region}`);
-    
-    // Assign coordinator based on region
-    if (upperRegion.includes("INDIA") || upperRegion.includes("IN")) {
-      console.log("Assigning Haritha (India coordinator)");
-      return LOGISTICS_COORDINATORS.HARITHA_INDIA;
-    } else if (upperRegion.includes("CHINA") || upperRegion.includes("CN")) {
-      console.log("Assigning Rachel (China coordinator)");
-      return LOGISTICS_COORDINATORS.RACHEL_CHINA;
-    }
+  if (transitStatus && transitStatus.toLowerCase().includes("stuck")) {
+    console.log(`Stuck status detected: ${transitStatus}`);
+    return {
+      type: "stuck in transit",
+      severity: "high", 
+      reason: "Transit status marked as stuck",
+      isStuckStatus: true
+    };
   }
   
-  // Fallback logic if region column is empty or doesn't match
-  console.log("Region not found or doesn't match India/China, using carrier-based fallback");
-  if (carrier === "UPS") {
-    console.log("UPS carrier detected - defaulting to Haritha (India)");
-    return LOGISTICS_COORDINATORS.HARITHA_INDIA;
-  } else {
-    console.log("Non-UPS carrier detected - defaulting to Rachel (China)");
-    return LOGISTICS_COORDINATORS.RACHEL_CHINA;
-  }
+  return null;
+}
+
+function getLogisticsCoordinator(boardConfig) {
+  return boardConfig.coordinator;
 }
 
 function detectCarrier(updateText) {
@@ -218,30 +268,18 @@ function getCustomerAction(reason) {
   return actions[reason] || "Please contact the carrier to resolve this delivery issue.";
 }
 
-async function getCustomerFromMonday(itemDetails) {
+async function getCustomerFromMonday(itemDetails, boardConfig) {
   try {
     console.log("Looking for customer information in Monday columns...");
     
-    // Check specific customer column first
-    if (itemDetails.columnMap['text1']) {
-      console.log(`Found customer in text1: ${itemDetails.columnMap['text1']}`);
+    // Check customer name column
+    const customerNameColumn = boardConfig.columns.customerName;
+    if (itemDetails.columnMap[customerNameColumn]) {
+      console.log(`Found customer in ${customerNameColumn}: ${itemDetails.columnMap[customerNameColumn]}`);
       return {
-        name: itemDetails.columnMap['text1'],
-        columnId: 'text1'
+        name: itemDetails.columnMap[customerNameColumn],
+        columnId: customerNameColumn
       };
-    }
-    
-    // Fallback patterns
-    const customerPatterns = ["customer", "customer_name", "client", "company", "consignee"];
-    
-    for (const pattern of customerPatterns) {
-      if (itemDetails.columnMap[pattern]) {
-        console.log(`Found customer in ${pattern}: ${itemDetails.columnMap[pattern]}`);
-        return {
-          name: itemDetails.columnMap[pattern],
-          columnId: pattern
-        };
-      }
     }
     
     console.log("No customer information found in Monday columns");
@@ -423,33 +461,39 @@ Logistics Team
   }
 }
 
-function getLocationFromColumns(columnMap) {
+function getLocationFromColumns(itemDetails, boardConfig) {
   console.log("Searching for location in Monday columns...");
+  
+  const locationColumn = boardConfig.columns.latestLocation;
+  const location = itemDetails?.columnMap?.[locationColumn];
   
   if (DEBUG) {
     console.log("Available Monday columns:");
-    for (const [colId, colText] of Object.entries(columnMap)) {
+    for (const [colId, colText] of Object.entries(itemDetails.columnMap)) {
       if (colText) console.log(`   ${colId}: "${colText}"`);
     }
   }
   
-  if (columnMap["text5__1"]) {
-    console.log(`Found location: ${columnMap["text5__1"]}`);
-    return columnMap["text5__1"];
+  if (location) {
+    console.log(`Found location: ${location}`);
+    return location;
   }
   
   return "Unknown Location";
 }
 
-async function getItemDetails(itemId) {
+async function getItemDetails(itemId, boardId) {
   try {
-    console.log("Fetching item details for:", itemId);
+    console.log("Fetching item details for:", itemId, "from board:", boardId);
     
     const query = `
       query($itemIds: [ID!]) {
         items(ids: $itemIds) {
           id
           name
+          board {
+            id
+          }
           column_values { 
             id 
             type
@@ -477,6 +521,7 @@ async function getItemDetails(itemId) {
     return {
       id: item.id,
       name: item.name,
+      boardId: item.board.id,
       columnMap,
       poNumber: item.name
     };
@@ -487,23 +532,29 @@ async function getItemDetails(itemId) {
   }
 }
 
-function createSlackMessage(issue, itemDetails, updateText, location) {
+function createSlackMessage(issue, itemDetails, boardConfig, updateText, location) {
   const poNumber = itemDetails.poNumber;
-  const coordinator = getLogisticsCoordinator(itemDetails, issue.carrier);
+  const coordinator = getLogisticsCoordinator(boardConfig);
   const carrierEmoji = issue.carrier === "UPS" ? "📦" : issue.carrier === "DHL" ? "🚚" : issue.carrier === "FedEx" ? "✈️" : "📫";
   
-  const mainMessage = `${poNumber} is ${issue.type} from ${location}. Please review.`;
+  let mainMessage;
+  if (coordinator) {
+    mainMessage = `${coordinator} ${poNumber} is ${issue.type} from ${location}. Please review.`;
+  } else {
+    // For Portugal - make origin bold instead of tagging
+    mainMessage = `**${boardConfig.name}**: ${poNumber} is ${issue.type} from ${location}. Please review.`;
+  }
   
-  const detailsBlock = `${carrierEmoji} Item: ${poNumber}\n📝 Latest Update: ${updateText}\n📍 Current Location: ${location}\n🔍 Issue Type: ${issue.type}\n⚡ Severity: ${issue.severity}\n🚛 Carrier: ${issue.carrier}\n🤖 Analysis: ${issue.reason}`;
+  const detailsBlock = `${carrierEmoji} Item: ${poNumber}\n📝 Latest Update: ${updateText}\n📍 Current Location: ${location}\n🔍 Issue Type: ${issue.type}\n⚡ Severity: ${issue.severity}\n🚛 Carrier: ${issue.carrier}\n🌍 Origin: ${boardConfig.name}\n🤖 Analysis: ${issue.reason}`;
   
   return {
-    text: `${coordinator} ${mainMessage}`,
+    text: mainMessage,
     blocks: [
       {
         type: "section",
         text: {
           type: "mrkdwn",
-          text: `${coordinator} ${mainMessage}`
+          text: mainMessage
         }
       },
       {
@@ -531,8 +582,7 @@ async function analyzeIssue(updateText) {
       type: "held in customs",
       severity: "high",
       reason: "Customs issue detected",
-      carrier: carrier,
-      route: carrier === "UPS" ? "India-UK" : "China-UK"
+      carrier: carrier
     };
   }
   
@@ -541,8 +591,7 @@ async function analyzeIssue(updateText) {
       type: "experiencing delivery failure",
       severity: "high", 
       reason: "Failed delivery attempt",
-      carrier: carrier,
-      route: carrier === "UPS" ? "India-UK" : "China-UK"
+      carrier: carrier
     };
   }
   
@@ -550,7 +599,7 @@ async function analyzeIssue(updateText) {
 }
 
 app.post("/monday-webhook", async (req, res) => {
-  console.log("Processing:", req.body?.event?.pulseName, "->", req.body?.event?.value?.value);
+  console.log("Processing webhook:", req.body?.event?.pulseName, "->", req.body?.event?.value?.value);
   
   try {
     if (req.body?.challenge) {
@@ -564,32 +613,86 @@ app.post("/monday-webhook", async (req, res) => {
 
     const updateText = event.value?.value;
     const itemId = event.pulseId;
+    const boardId = event.boardId;
 
     if (!updateText) {
       console.log("No update text - skipping");
       return res.status(200).end();
     }
 
-    const itemDetails = await getItemDetails(itemId);
+    if (!boardId) {
+      console.log("No board ID found in webhook - skipping");
+      return res.status(200).end();
+    }
+
+    // Get board configuration
+    const boardConfig = getBoardConfig(boardId);
+    if (!boardConfig) {
+      console.log(`Unknown board ID: ${boardId} - skipping`);
+      return res.status(200).end();
+    }
+
+    console.log(`Processing webhook from ${boardConfig.name} board`);
+
+    const itemDetails = await getItemDetails(itemId, boardId);
     if (!itemDetails) {
       return res.status(200).end();
     }
 
-    const ambiguousIssue = checkAmbiguousStatus(itemId, updateText);
-    if (ambiguousIssue) {
-      console.log("Ambiguous status timeout reached");
+    // Check for "stuck" status first (immediate alert)
+    const stuckIssue = checkStuckStatus(itemDetails, boardConfig);
+    if (stuckIssue) {
+      console.log("Stuck status detected - sending immediate alert");
+      const location = getLocationFromColumns(itemDetails, boardConfig);
+      stuckIssue.carrier = detectCarrier(updateText);
+      
+      const slackMessage = createSlackMessage(stuckIssue, itemDetails, boardConfig, updateText, location);
+      
+      try {
+        await slack.chat.postMessage({
+          channel: SLACK_CHANNEL_ID,
+          ...slackMessage
+        });
+        console.log("Slack alert sent for stuck status");
+      } catch (slackError) {
+        console.error("Slack error:", slackError.message);
+      }
+      
       return res.status(200).end();
     }
 
+    // Check for ambiguous statuses
+    const ambiguousIssue = checkAmbiguousStatus(itemId, updateText);
+    if (ambiguousIssue) {
+      console.log("Ambiguous status timeout reached");
+      const location = getLocationFromColumns(itemDetails, boardConfig);
+      ambiguousIssue.carrier = detectCarrier(updateText);
+      
+      const slackMessage = createSlackMessage(ambiguousIssue, itemDetails, boardConfig, updateText, location);
+      
+      try {
+        await slack.chat.postMessage({
+          channel: SLACK_CHANNEL_ID,
+          ...slackMessage
+        });
+        console.log("Slack alert sent for ambiguous status timeout");
+      } catch (slackError) {
+        console.error("Slack error:", slackError.message);
+      }
+      
+      return res.status(200).end();
+    }
+
+    // Check for immediate issues
     const issue = await analyzeIssue(updateText);
     if (issue) {
-      const location = getLocationFromColumns(itemDetails.columnMap);
+      const location = getLocationFromColumns(itemDetails, boardConfig);
       
       const customerNotification = shouldNotifyCustomer(updateText);
       if (customerNotification.shouldNotify) {
         console.log("Customer notification required");
         
-        const customer = await getCustomerFromMonday(itemDetails);
+        const customer = await getCustomerFromMonday(itemDetails, boardConfig);
         if (customer) {
           const hubspotCustomer = await searchCustomerInHubSpot(customer.name);
           if (hubspotCustomer) {
@@ -598,8 +701,7 @@ app.post("/monday-webhook", async (req, res) => {
               itemDetails.poNumber, 
               customerNotification, 
               location, 
-              updateText,
-              itemDetails
+              updateText
             );
             
             if (emailSent) {
@@ -611,32 +713,19 @@ app.post("/monday-webhook", async (req, res) => {
         } else {
           console.log("Customer not found in Monday");
         }
-        
-        // Skip coordinator tagging for customer-side delivery failures
-        const slackMessage = createSlackMessage(issue, itemDetails, updateText, location, true);
-        
-        try {
-          await slack.chat.postMessage({
-            channel: SLACK_CHANNEL_ID,
-            ...slackMessage
-          });
-          console.log("Slack alert sent (no coordinator tag - customer notified)");
-        } catch (slackError) {
-          console.error("Slack error:", slackError.message);
-        }
-      } else {
-        // For non-customer delivery failures (customs, etc.), tag coordinators
-        const slackMessage = createSlackMessage(issue, itemDetails, updateText, location, false);
-        
-        try {
-          await slack.chat.postMessage({
-            channel: SLACK_CHANNEL_ID,
-            ...slackMessage
-          });
-          console.log("Slack alert sent (with coordinator tag)");
-        } catch (slackError) {
-          console.error("Slack error:", slackError.message);
-        }
+      }
+      
+      // Send Slack alert
+      const slackMessage = createSlackMessage(issue, itemDetails, boardConfig, updateText, location);
+      
+      try {
+        await slack.chat.postMessage({
+          channel: SLACK_CHANNEL_ID,
+          ...slackMessage
+        });
+        console.log("Slack alert sent");
+      } catch (slackError) {
+        console.error("Slack error:", slackError.message);
       }
     } else {
       console.log("No issues detected");
@@ -651,9 +740,9 @@ app.post("/monday-webhook", async (req, res) => {
 });
 
 app.get("/test", (req, res) => {
-  res.send("Logistics watcher running: " + new Date().toISOString());
+  res.send("Multi-board logistics watcher running: " + new Date().toISOString());
 });
 
 app.listen(PORT, () => {
-  console.log(`Watcher listening on ${PORT}`);
+  console.log(`Multi-board watcher listening on ${PORT}`);
 });
