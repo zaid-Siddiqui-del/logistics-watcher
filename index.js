@@ -743,6 +743,22 @@ app.get("/test", (req, res) => {
   res.send("Multi-board logistics watcher running: " + new Date().toISOString());
 });
 
+// Debug endpoint to see what Monday sends
+app.post("/webhook-debug", (req, res) => {
+  console.log("=== WEBHOOK DEBUG ===");
+  console.log("Headers:", req.headers);
+  console.log("Body:", JSON.stringify(req.body, null, 2));
+  console.log("===================");
+  
+  // Handle Monday's challenge
+  if (req.body?.challenge) {
+    console.log("Challenge received:", req.body.challenge);
+    return res.json({ challenge: req.body.challenge });
+  }
+  
+  res.status(200).json({ status: "received" });
+});
+
 app.listen(PORT, () => {
   console.log(`Multi-board watcher listening on ${PORT}`);
 });
