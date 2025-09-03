@@ -49,7 +49,7 @@ const genAI = GEMINI_API_KEY ? new GoogleGenerativeAI(GEMINI_API_KEY) : null;
 // Configure Gmail SMTP
 let transporter = null;
 if (GMAIL_USER && GMAIL_APP_PASSWORD) {
-  transporter = nodemailer.createTransport({
+  transporter = nodemailer.createTransporter({
     service: 'gmail',
     auth: {
       user: GMAIL_USER,
@@ -149,18 +149,31 @@ function checkAmbiguousStatus(itemId, updateText) {
   return null;
 }
 
-function getLogisticsCoordinator(route, carrier) {
-  if (route && route.toUpperCase().includes("INDIA")) {
-    return LOGISTICS_COORDINATORS.HARITHA_INDIA;
+function getLogisticsCoordinator(itemDetails, carrier) {
+  // Get region from Monday board (status77 column)
+  const region = itemDetails?.columnMap?.status77;
+  
+  if (region) {
+    const upperRegion = region.toUpperCase();
+    console.log(`Region found: ${region}`);
+    
+    // Assign coordinator based on region
+    if (upperRegion.includes("INDIA") || upperRegion.includes("IN")) {
+      console.log("Assigning Haritha (India coordinator)");
+      return LOGISTICS_COORDINATORS.HARITHA_INDIA;
+    } else if (upperRegion.includes("CHINA") || upperRegion.includes("CN")) {
+      console.log("Assigning Rachel (China coordinator)");
+      return LOGISTICS_COORDINATORS.RACHEL_CHINA;
+    }
   }
   
-  if (route && route.toUpperCase().includes("CHINA")) {
-    return LOGISTICS_COORDINATORS.RACHEL_CHINA;
-  }
-  
+  // Fallback logic if region column is empty or doesn't match
+  console.log("Region not found or doesn't match India/China, using carrier-based fallback");
   if (carrier === "UPS") {
+    console.log("UPS carrier detected - defaulting to Haritha (India)");
     return LOGISTICS_COORDINATORS.HARITHA_INDIA;
   } else {
+    console.log("Non-UPS carrier detected - defaulting to Rachel (China)");
     return LOGISTICS_COORDINATORS.RACHEL_CHINA;
   }
 }
@@ -365,7 +378,7 @@ async function searchCustomerInHubSpot(customerName) {
   }
 }
 
-async function sendEmailToCustomer(customer, poNumber, deliveryIssue, location, updateText, itemDetails) {
+async function sendEmailToCustomer(customer, poNumber, deliveryIssue, location, updateText) {
   if (!transporter) {
     console.log("Email transporter not configured - cannot send email");
     return false;
@@ -374,22 +387,11 @@ async function sendEmailToCustomer(customer, poNumber, deliveryIssue, location, 
   try {
     console.log(`Sending delivery notification email to ${customer.email}`);
     
-    // Get additional details from Monday columns
-    const partNumber = itemDetails.columnMap['text0'] || 'N/A';
-    const trackingNumber = itemDetails.columnMap['text6__1'] || 'N/A';
-    
-    console.log(`Part Number: ${partNumber}, Tracking Number: ${trackingNumber}`);
-    
     const emailSubject = `Delivery Update Required - Order ${poNumber}`;
     const emailBody = `
 Dear ${customer.firstName || "Valued Customer"},
 
 We wanted to inform you about a delivery attempt for your order ${poNumber}.
-
-Order Details:
-- Order Number: ${poNumber}
-- Part Number: ${partNumber}
-- Tracking Number: ${trackingNumber}
 
 Delivery Status: ${updateText}
 Current Location: ${location}
@@ -485,25 +487,23 @@ async function getItemDetails(itemId) {
   }
 }
 
-function createSlackMessage(issue, itemDetails, updateText, location, skipCoordinatorTag = false) {
+function createSlackMessage(issue, itemDetails, updateText, location) {
   const poNumber = itemDetails.poNumber;
+  const coordinator = getLogisticsCoordinator(itemDetails, issue.carrier);
   const carrierEmoji = issue.carrier === "UPS" ? "📦" : issue.carrier === "DHL" ? "🚚" : issue.carrier === "FedEx" ? "✈️" : "📫";
-  
-  // Only tag coordinator if not skipping (for non-customer delivery failures)
-  const coordinator = skipCoordinatorTag ? "" : getLogisticsCoordinator(issue.route, issue.carrier);
   
   const mainMessage = `${poNumber} is ${issue.type} from ${location}. Please review.`;
   
   const detailsBlock = `${carrierEmoji} Item: ${poNumber}\n📝 Latest Update: ${updateText}\n📍 Current Location: ${location}\n🔍 Issue Type: ${issue.type}\n⚡ Severity: ${issue.severity}\n🚛 Carrier: ${issue.carrier}\n🤖 Analysis: ${issue.reason}`;
   
   return {
-    text: `${coordinator}${coordinator ? " " : ""}${mainMessage}`,
+    text: `${coordinator} ${mainMessage}`,
     blocks: [
       {
         type: "section",
         text: {
           type: "mrkdwn",
-          text: `${coordinator}${coordinator ? " " : ""}${mainMessage}`
+          text: `${coordinator} ${mainMessage}`
         }
       },
       {
@@ -536,19 +536,14 @@ async function analyzeIssue(updateText) {
     };
   }
   
-  // ADD THIS NEW BLOCK HERE:
-  if (text.includes("on hold") || text.includes("shipment on hold")) {
+  if (text.includes("delivery attempted") || text.includes("recipient unavailable") || text.includes("premises closed")) {
     return {
-      type: "shipment on hold",
-      severity: "high",
-      reason: "Shipment placed on hold by carrier - immediate attention required",
+      type: "experiencing delivery failure",
+      severity: "high", 
+      reason: "Failed delivery attempt",
       carrier: carrier,
       route: carrier === "UPS" ? "India-UK" : "China-UK"
     };
-  }
-  
-  if (text.includes("delivery attempted") || text.includes("recipient unavailable") || text.includes("premises closed")) {
-    // ... existing delivery code
   }
   
   return null;
@@ -662,4 +657,3 @@ app.get("/test", (req, res) => {
 app.listen(PORT, () => {
   console.log(`Watcher listening on ${PORT}`);
 });
-
