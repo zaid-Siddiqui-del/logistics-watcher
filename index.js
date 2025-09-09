@@ -534,7 +534,7 @@ async function getItemDetails(itemId, boardId) {
 
 function createSlackMessage(issue, itemDetails, boardConfig, updateText, location) {
   const poNumber = itemDetails.poNumber;
-  const coordinator = getLogisticsCoordinator(boardConfig);
+  const coordinator = getLogisticsCoordinator(boardConfig, itemDetails);
   const carrierEmoji = issue.carrier === "UPS" ? "📦" : issue.carrier === "DHL" ? "🚚" : issue.carrier === "FedEx" ? "✈️" : "📫";
   
   let mainMessage;
