@@ -109,6 +109,22 @@ const BOARD_CONFIGS = {
       transitStatus: "color_mkvev72x",
       partNumber: "text0"
     }
+  },
+  "162479257": { // Main Board (Mixed Regions)
+    name: "Main",
+    region: "MIXED", // Will check region column for each item
+    coordinator: null, // Will be determined by region column
+    columns: {
+      region: "status77",
+      customerName: "text1",
+      companyName: "text3", 
+      customerTracking: "text_mkvcce8m", // Using India board structure as base
+      latestUpdate: "text_mkvc93tw",
+      latestLocation: "text_mkvcg0xs",
+      latestUpdateDate: "date_mkvey807",
+      transitStatus: "color_mkvew24q",
+      partNumber: "text0"
+    }
   }
 };
 
@@ -224,7 +240,34 @@ function checkStuckStatus(itemDetails, boardConfig) {
   return null;
 }
 
-function getLogisticsCoordinator(boardConfig) {
+function getLogisticsCoordinator(boardConfig, itemDetails) {
+  // For mixed region boards (like Main board), check the region column
+  if (boardConfig.region === "MIXED") {
+    const region = itemDetails?.columnMap?.[boardConfig.columns.region];
+    
+    if (region) {
+      const upperRegion = region.toUpperCase();
+      console.log(`Mixed board - Region found: ${region}`);
+      
+      // Assign coordinator based on region
+      if (upperRegion.includes("INDIA") || upperRegion.includes("IN")) {
+        console.log("Assigning Haritha (India coordinator)");
+        return `<@${HARITHA_USER_ID}>`;
+      } else if (upperRegion.includes("CHINA") || upperRegion.includes("CN")) {
+        console.log("Assigning Rachel (China coordinator)");
+        return `<@${RACHEL_USER_ID}>`;
+      } else if (upperRegion.includes("PORTUGAL") || upperRegion.includes("PT")) {
+        console.log("Portugal region - no coordinator tagging");
+        return null;
+      }
+    }
+    
+    // Fallback for mixed board if region unclear
+    console.log("Mixed board - region unclear, no coordinator assigned");
+    return null;
+  }
+  
+  // For single-region boards, use the predefined coordinator
   return boardConfig.coordinator;
 }
 
@@ -541,7 +584,7 @@ function createSlackMessage(issue, itemDetails, boardConfig, updateText, locatio
   if (coordinator) {
     mainMessage = `${coordinator} ${poNumber} is ${issue.type} from ${location}. Please review.`;
   } else {
-    // For Portugal - make origin bold instead of tagging
+    // For Portugal or mixed board with no coordinator - make origin bold instead of tagging
     mainMessage = `**${boardConfig.name}**: ${poNumber} is ${issue.type} from ${location}. Please review.`;
   }
   
