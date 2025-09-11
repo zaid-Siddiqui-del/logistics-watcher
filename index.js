@@ -118,8 +118,8 @@ const BOARD_CONFIGS = {
       region: "status77",
       customerName: "text1",
       companyName: "text3", 
-      customerTracking: "text_mkvcce8m", // Using India board structure as base
-      latestUpdate: "text_mkvc93tw",
+      customerTracking: "text_mkvcce8m", 
+      latestUpdate: "text_1__1", // Correct column for main board
       latestLocation: "text_mkvcg0xs",
       latestUpdateDate: "date_mkvey807",
       transitStatus: "color_mkvew24q",
