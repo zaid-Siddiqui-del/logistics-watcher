@@ -36,6 +36,13 @@ const BOARDS = {
   INDIA: "9371038978"
 };
 
+// Board-specific column IDs for customer tracking
+const TRACKING_COLUMN_IDS = {
+  [BOARDS.MAIN]: "text_mkvcdqrw",
+  [BOARDS.CHINA]: "text_mkvcdqrw", 
+  [BOARDS.INDIA]: "text_mkvcce8m"
+};
+
 // Function to get board name for logging
 function getBoardName(boardId) {
   const boardIdStr = String(boardId);
@@ -45,6 +52,11 @@ function getBoardName(boardId) {
     case BOARDS.INDIA: return "India Board";
     default: return `Board ${boardId}`;
   }
+}
+
+// Function to get the correct tracking column ID for a board
+function getTrackingColumnId(boardId) {
+  return TRACKING_COLUMN_IDS[String(boardId)] || "text_mkvcdqrw"; // fallback to main/china column ID
 }
 
 console.log("Environment variables loaded:");
@@ -204,6 +216,8 @@ function extractTrackingNumber(text) {
 
 async function updateTrackingColumn(itemId, trackingNumber, boardId = MONDAY_BOARD_ID) {
   try {
+    const trackingColumnId = getTrackingColumnId(boardId);
+    
     const mutation = `
       mutation($itemId: ID!, $boardId: ID!, $columnId: String!, $value: String!) {
         change_simple_column_value(
@@ -219,13 +233,13 @@ async function updateTrackingColumn(itemId, trackingNumber, boardId = MONDAY_BOA
     
     console.log(`🔄 Attempting to update item ${itemId} with tracking: ${trackingNumber}`);
     console.log(`📋 Board: ${getBoardName(boardId)} (${boardId})`);
-    console.log(`📝 Column ID: text_mkvcdqrw`);
+    console.log(`📝 Column ID: ${trackingColumnId}`);
     
     const response = await monday.api(mutation, {
       variables: {
         itemId: String(itemId),
         boardId: String(boardId),
-        columnId: "text_mkvcdqrw",
+        columnId: trackingColumnId,
         value: trackingNumber
       }
     });
@@ -322,7 +336,10 @@ async function sendCustomerNotificationSMTP(toEmail, toName, poNumber, deliveryI
   });
 
   const partNumber = itemDetails?.columnMap?.["text0"] || "N/A";
-  const customerTracking = itemDetails?.columnMap?.["text_mkvcdqrw"] || "N/A";
+  // Use the correct tracking column ID based on the board
+  const boardId = itemDetails?.boardId || MONDAY_BOARD_ID;
+  const trackingColumnId = getTrackingColumnId(boardId);
+  const customerTracking = itemDetails?.columnMap?.[trackingColumnId] || "N/A";
 
   const mail = await transporter.sendMail({
     from: { name: EMAIL_FROM_NAME, address: EMAIL_FROM },
