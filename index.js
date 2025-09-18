@@ -29,6 +29,24 @@ const {
   EMAIL_FROM_NAME = "Geomiq Support",
 } = process.env;
 
+// Board configuration
+const BOARDS = {
+  MAIN: "162479257",
+  CHINA: "9371034380", 
+  INDIA: "9371038978"
+};
+
+// Function to get board name for logging
+function getBoardName(boardId) {
+  const boardIdStr = String(boardId);
+  switch (boardIdStr) {
+    case BOARDS.MAIN: return "Main Board";
+    case BOARDS.CHINA: return "China Board";
+    case BOARDS.INDIA: return "India Board";
+    default: return `Board ${boardId}`;
+  }
+}
+
 console.log("Environment variables loaded:");
 console.log("- MONDAY_TOKEN:", MONDAY_TOKEN ? `Present (${MONDAY_TOKEN.substring(0, 20)}...)` : "❌ Missing");
 console.log("- MONDAY_BOARD_ID:", MONDAY_BOARD_ID);
@@ -138,7 +156,14 @@ function detectCarrier(updateText) {
   return "unknown";
 }
 
-function getLogisticsCoordinator(route, carrier) {
+function getLogisticsCoordinator(route, carrier, boardId) {
+  const boardIdStr = String(boardId);
+  
+  // Board-specific coordinators
+  if (boardIdStr === BOARDS.CHINA) return LOGISTICS_COORDINATORS.RACHEL_CHINA;
+  if (boardIdStr === BOARDS.INDIA) return LOGISTICS_COORDINATORS.HARITHA_INDIA;
+  
+  // Fallback to route/carrier logic
   if (route && route.toUpperCase().includes("INDIA")) return LOGISTICS_COORDINATORS.HARITHA_INDIA;
   if (route && route.toUpperCase().includes("CHINA")) return LOGISTICS_COORDINATORS.RACHEL_CHINA;
   if (carrier === "UPS") return LOGISTICS_COORDINATORS.HARITHA_INDIA;
@@ -177,13 +202,13 @@ function extractTrackingNumber(text) {
   return null;
 }
 
-async function updateTrackingColumn(itemId, trackingNumber) {
+async function updateTrackingColumn(itemId, trackingNumber, boardId = MONDAY_BOARD_ID) {
   try {
     const mutation = `
-      mutation($itemId: ID!, $columnId: String!, $value: String!) {
+      mutation($itemId: ID!, $boardId: ID!, $columnId: String!, $value: String!) {
         change_simple_column_value(
           item_id: $itemId,
-          board_id: ${MONDAY_BOARD_ID},
+          board_id: $boardId,
           column_id: $columnId,
           value: $value
         ) {
@@ -193,53 +218,68 @@ async function updateTrackingColumn(itemId, trackingNumber) {
     `;
     
     console.log(`🔄 Attempting to update item ${itemId} with tracking: ${trackingNumber}`);
-    console.log(`📋 Board ID: ${MONDAY_BOARD_ID}`);
+    console.log(`📋 Board: ${getBoardName(boardId)} (${boardId})`);
     console.log(`📝 Column ID: text_mkvcdqrw`);
-    console.log(`🔑 Using token: ${MONDAY_TOKEN ? MONDAY_TOKEN.substring(0, 20) + '...' : 'MISSING'}`);
     
-    // Try with explicit token in options
     const response = await monday.api(mutation, {
       variables: {
         itemId: String(itemId),
+        boardId: String(boardId),
         columnId: "text_mkvcdqrw",
         value: trackingNumber
       }
-    }, {
-      token: MONDAY_TOKEN  // Explicitly pass token
     });
     
     console.log(`📊 Monday.com API response:`, JSON.stringify(response, null, 2));
     
     if (response.errors) {
       console.error(`❌ Monday.com API errors:`, response.errors);
-      
-      // Try alternative approach with fresh Monday instance
-      console.log("🔄 Trying alternative Monday.com API approach...");
-      const mondayAlt = mondaySdk();
-      mondayAlt.setToken(MONDAY_TOKEN);
-      
-      const altResponse = await mondayAlt.api(mutation, {
-        variables: {
-          itemId: String(itemId),
-          columnId: "text_mkvcdqrw", 
-          value: trackingNumber
-        }
-      });
-      
-      console.log(`📊 Alternative API response:`, JSON.stringify(altResponse, null, 2));
-      
-      if (!altResponse.errors) {
-        console.log(`✅ Updated tracking via alternative method for item ${itemId}: ${trackingNumber}`);
-      }
-      
     } else {
-      console.log(`✅ Updated tracking for item ${itemId}: ${trackingNumber}`);
+      console.log(`✅ Updated tracking for item ${itemId} on ${getBoardName(boardId)}: ${trackingNumber}`);
     }
     
   } catch (error) {
     console.error(`❌ Failed to update tracking for item ${itemId}:`, error);
     console.error(`❌ Error details:`, error.message);
     console.error(`❌ Stack trace:`, error.stack);
+  }
+}
+
+async function findItemByName(itemName) {
+  try {
+    const query = `query($boardId: ID!) {
+      boards(ids: [$boardId]) {
+        items_page {
+          items {
+            id
+            name
+            column_values { id text }
+          }
+        }
+      }
+    }`;
+    
+    const response = await monday.api(query, { variables: { boardId: String(MONDAY_BOARD_ID) } });
+    
+    if (response.errors) {
+      console.error("Error finding items:", response.errors);
+      return null;
+    }
+    
+    const items = response.data.boards[0]?.items_page?.items || [];
+    const foundItem = items.find(item => item.name === itemName);
+    
+    if (foundItem) {
+      console.log(`🔍 Found item by name: ${foundItem.name} -> ID: ${foundItem.id}`);
+      return foundItem;
+    }
+    
+    console.log(`❌ Item "${itemName}" not found in board`);
+    return null;
+    
+  } catch (error) {
+    console.error("Error searching for item by name:", error);
+    return null;
   }
 }
 
@@ -309,12 +349,13 @@ Geomiq Support`,
   console.log("SMTP message sent:", mail.messageId);
 }
 
-function createSlackMessage(issue, itemDetails, updateText, location) {
+function createSlackMessage(issue, itemDetails, updateText, location, boardId) {
   const poNumber = itemDetails.poNumber;
-  const coordinator = getLogisticsCoordinator(issue.route, issue.carrier);
+  const coordinator = getLogisticsCoordinator(issue.route, issue.carrier, boardId);
   const carrierEmoji = issue.carrier === "UPS" ? "📦" : issue.carrier === "DHL" ? "🚚" : issue.carrier === "FedEx" ? "✈️" : "📫";
+  const boardName = getBoardName(boardId);
   const mainMessage = `${poNumber} is ${issue.type} from ${location}. Please review.`;
-  const detailsBlock = `${carrierEmoji} Item: ${poNumber}\n📝 Latest Update: ${updateText}\n📍 Current Location: ${location}\n🔍 Issue Type: ${issue.type}\n⚡ Severity: ${issue.severity}\n🚛 Carrier: ${issue.carrier}\n🤖 Analysis: ${issue.reason}`;
+  const detailsBlock = `${carrierEmoji} Item: ${poNumber}\n📋 Board: ${boardName}\n📝 Latest Update: ${updateText}\n📍 Current Location: ${location}\n🔍 Issue Type: ${issue.type}\n⚡ Severity: ${issue.severity}\n🚛 Carrier: ${issue.carrier}\n🤖 Analysis: ${issue.reason}`;
   return {
     text: `${coordinator} ${mainMessage}`,
     blocks: [
@@ -393,16 +434,28 @@ app.post("/monday-webhook", async (req, res) => {
     if (!updateText) return res.status(200).end();
     
     console.log("Processing:", event.pulseName, "->", updateText);
-    console.log("Column ID:", columnId); // Debug: see what column ID we're getting
+    console.log("Column ID:", columnId);
+    console.log("Pulse ID:", itemId);
+    console.log("Board ID from webhook:", event.boardId, `(${getBoardName(event.boardId)})`);
+    
+    // Validate that this is one of our expected boards
+    const boardId = String(event.boardId);
+    const validBoards = Object.values(BOARDS);
+    if (!validBoards.includes(boardId)) {
+      console.log(`⚠️  Webhook from unexpected board ${boardId}, skipping`);
+      return res.status(200).end();
+    }
 
     // Always try to extract tracking numbers from URLs, regardless of column
     const trackingNumber = extractTrackingNumber(updateText);
     if (trackingNumber && trackingNumber !== updateText.trim()) {
       console.log(`🔍 Extracted tracking number: ${trackingNumber} from URL`);
-      console.log(`📍 Column ID detected: ${columnId}`);
+      console.log(`📍 Column ID: ${columnId}`);
+      console.log(`📍 Pulse ID: ${itemId}`);
+      console.log(`📍 Board: ${getBoardName(event.boardId)} (${event.boardId})`);
       
-      // Try to update the tracking column
-      await updateTrackingColumn(itemId, trackingNumber);
+      // Try to update the tracking column with the correct board ID
+      await updateTrackingColumn(itemId, trackingNumber, event.boardId);
       return res.status(200).end();
     }
 
@@ -412,7 +465,7 @@ app.post("/monday-webhook", async (req, res) => {
     const ambiguousIssue = checkAmbiguousStatus(itemId, updateText);
     if (ambiguousIssue) {
       const location = getLocationFromColumns(itemDetails.columnMap);
-      const slackMessage = createSlackMessage(ambiguousIssue, itemDetails, updateText, location);
+      const slackMessage = createSlackMessage(ambiguousIssue, itemDetails, updateText, location, event.boardId);
       try {
         await slack.chat.postMessage({ channel: SLACK_CHANNEL_ID, ...slackMessage });
       } catch (_) {}
@@ -444,7 +497,7 @@ app.post("/monday-webhook", async (req, res) => {
           }
         }
       }
-      const slackMessage = createSlackMessage(issue, itemDetails, updateText, location);
+      const slackMessage = createSlackMessage(issue, itemDetails, updateText, location, event.boardId);
       await slack.chat.postMessage({ channel: SLACK_CHANNEL_ID, ...slackMessage });
       console.log("Alert sent successfully");
     }
