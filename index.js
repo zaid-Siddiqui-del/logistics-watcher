@@ -170,7 +170,7 @@ async function updateTrackingColumn(itemId, trackingNumber) {
     await monday.api(mutation, {
       variables: {
         itemId: String(itemId),
-        columnId: "text6__1", // This is your customer tracking column ID
+        columnId: "text_mkvcdqrw", // Customer tracking column ID
         value: trackingNumber
       }
     });
@@ -220,7 +220,7 @@ async function sendCustomerNotificationSMTP(toEmail, toName, poNumber, deliveryI
   });
 
   const partNumber = itemDetails?.columnMap?.["text0"] || "N/A";
-  const customerTracking = itemDetails?.columnMap?.["text6__1"] || "N/A";
+  const customerTracking = itemDetails?.columnMap?.["text_mkvcdqrw"] || "N/A";
 
   const mail = await transporter.sendMail({
     from: { name: EMAIL_FROM_NAME, address: EMAIL_FROM },
@@ -331,15 +331,17 @@ app.post("/monday-webhook", async (req, res) => {
     if (!updateText) return res.status(200).end();
     
     console.log("Processing:", event.pulseName, "->", updateText);
+    console.log("Column ID:", columnId); // Debug: see what column ID we're getting
 
-    // Check if this is the customer tracking column being updated with a URL
-    if (columnId === "text6__1") { // Customer tracking column
-      const trackingNumber = extractTrackingNumber(updateText);
-      if (trackingNumber && trackingNumber !== updateText.trim()) {
-        console.log(`🔍 Extracted tracking number: ${trackingNumber} from URL`);
-        await updateTrackingColumn(itemId, trackingNumber);
-        return res.status(200).end();
-      }
+    // Always try to extract tracking numbers from URLs, regardless of column
+    const trackingNumber = extractTrackingNumber(updateText);
+    if (trackingNumber && trackingNumber !== updateText.trim()) {
+      console.log(`🔍 Extracted tracking number: ${trackingNumber} from URL`);
+      console.log(`📍 Column ID detected: ${columnId}`);
+      
+      // Try to update the tracking column
+      await updateTrackingColumn(itemId, trackingNumber);
+      return res.status(200).end();
     }
 
     const itemDetails = await getItemDetails(itemId);
@@ -388,6 +390,29 @@ app.post("/monday-webhook", async (req, res) => {
   } catch (e) {
     console.error("Webhook error:", e);
     res.status(200).end();
+  }
+});
+
+app.get("/debug-columns/:itemId", async (req, res) => {
+  try {
+    const itemId = req.params.itemId;
+    const itemDetails = await getItemDetails(itemId);
+    
+    if (!itemDetails) {
+      return res.status(404).send("Item not found");
+    }
+    
+    // Show all columns and their IDs
+    const columnInfo = itemDetails.columnMap;
+    
+    res.json({
+      itemId,
+      itemName: itemDetails.name,
+      columns: columnInfo,
+      note: "Look for the 'Customer tracking' column to find the correct column ID"
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
   }
 });
 
