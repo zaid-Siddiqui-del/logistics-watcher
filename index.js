@@ -29,6 +29,12 @@ const {
   EMAIL_FROM_NAME = "Geomiq Support",
 } = process.env;
 
+console.log("Environment variables loaded:");
+console.log("- MONDAY_TOKEN:", MONDAY_TOKEN ? `Present (${MONDAY_TOKEN.substring(0, 20)}...)` : "❌ Missing");
+console.log("- MONDAY_BOARD_ID:", MONDAY_BOARD_ID);
+console.log("- SLACK_BOT_TOKEN:", SLACK_BOT_TOKEN ? "Present" : "❌ Missing");
+console.log("- SLACK_CHANNEL_ID:", SLACK_CHANNEL_ID);
+
 console.log("SMTP config:", {
   host: SMTP_HOST,
   port: SMTP_PORT,
@@ -50,6 +56,25 @@ app.use(express.json({ type: "*/*" }));
 
 const monday = mondaySdk();
 monday.setToken(MONDAY_TOKEN);
+
+// Test Monday.com connection on startup
+async function testMondayConnection() {
+  try {
+    const query = `query { me { name email } }`;
+    const response = await monday.api(query);
+    
+    if (response.errors) {
+      console.error("❌ Monday.com authentication failed:", response.errors);
+    } else {
+      console.log("✅ Monday.com authenticated as:", response.data.me.name);
+    }
+  } catch (error) {
+    console.error("❌ Monday.com connection error:", error.message);
+  }
+}
+
+// Test connection after a delay to ensure everything is initialized
+setTimeout(testMondayConnection, 2000);
 
 const slack = new WebClient(SLACK_BOT_TOKEN);
 const genAI = GEMINI_API_KEY ? new GoogleGenerativeAI(GEMINI_API_KEY) : null;
@@ -170,19 +195,43 @@ async function updateTrackingColumn(itemId, trackingNumber) {
     console.log(`🔄 Attempting to update item ${itemId} with tracking: ${trackingNumber}`);
     console.log(`📋 Board ID: ${MONDAY_BOARD_ID}`);
     console.log(`📝 Column ID: text_mkvcdqrw`);
+    console.log(`🔑 Using token: ${MONDAY_TOKEN ? MONDAY_TOKEN.substring(0, 20) + '...' : 'MISSING'}`);
     
+    // Try with explicit token in options
     const response = await monday.api(mutation, {
       variables: {
         itemId: String(itemId),
         columnId: "text_mkvcdqrw",
         value: trackingNumber
       }
+    }, {
+      token: MONDAY_TOKEN  // Explicitly pass token
     });
     
     console.log(`📊 Monday.com API response:`, JSON.stringify(response, null, 2));
     
     if (response.errors) {
       console.error(`❌ Monday.com API errors:`, response.errors);
+      
+      // Try alternative approach with fresh Monday instance
+      console.log("🔄 Trying alternative Monday.com API approach...");
+      const mondayAlt = mondaySdk();
+      mondayAlt.setToken(MONDAY_TOKEN);
+      
+      const altResponse = await mondayAlt.api(mutation, {
+        variables: {
+          itemId: String(itemId),
+          columnId: "text_mkvcdqrw", 
+          value: trackingNumber
+        }
+      });
+      
+      console.log(`📊 Alternative API response:`, JSON.stringify(altResponse, null, 2));
+      
+      if (!altResponse.errors) {
+        console.log(`✅ Updated tracking via alternative method for item ${itemId}: ${trackingNumber}`);
+      }
+      
     } else {
       console.log(`✅ Updated tracking for item ${itemId}: ${trackingNumber}`);
     }
@@ -190,6 +239,7 @@ async function updateTrackingColumn(itemId, trackingNumber) {
   } catch (error) {
     console.error(`❌ Failed to update tracking for item ${itemId}:`, error);
     console.error(`❌ Error details:`, error.message);
+    console.error(`❌ Stack trace:`, error.stack);
   }
 }
 
@@ -402,6 +452,33 @@ app.post("/monday-webhook", async (req, res) => {
   } catch (e) {
     console.error("Webhook error:", e);
     res.status(200).end();
+  }
+});
+
+app.get("/test-monday-auth", async (req, res) => {
+  try {
+    // Test Monday.com authentication with a simple query
+    const query = `query { me { name email } }`;
+    const response = await monday.api(query);
+    
+    if (response.errors) {
+      res.status(401).json({
+        success: false,
+        error: "Monday.com authentication failed",
+        details: response.errors
+      });
+    } else {
+      res.json({
+        success: true,
+        message: "Monday.com authentication successful",
+        user: response.data.me
+      });
+    }
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
   }
 });
 
