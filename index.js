@@ -120,6 +120,67 @@ function getLogisticsCoordinator(route, carrier) {
   return LOGISTICS_COORDINATORS.RACHEL_CHINA;
 }
 
+function extractTrackingNumber(text) {
+  if (!text) return null;
+  
+  // Check if it's a URL
+  if (text.includes('http')) {
+    // DHL tracking URL patterns
+    const dhlMatch = text.match(/tracking-id=([A-Z0-9]+)/i);
+    if (dhlMatch) return dhlMatch[1];
+    
+    // UPS tracking URL patterns
+    const upsMatch = text.match(/tracknum=([A-Z0-9]+)/i) || 
+                     text.match(/TrackingNumber=([A-Z0-9]+)/i);
+    if (upsMatch) return upsMatch[1];
+    
+    // FedEx tracking URL patterns
+    const fedexMatch = text.match(/tracknumber=([A-Z0-9]+)/i) || 
+                       text.match(/trknbr=([A-Z0-9]+)/i);
+    if (fedexMatch) return fedexMatch[1];
+    
+    // Generic tracking number extraction from URL parameters
+    const genericMatch = text.match(/(?:tracking|track|trk)(?:_?(?:id|num|number))?\=([A-Z0-9]+)/i);
+    if (genericMatch) return genericMatch[1];
+  }
+  
+  // If it's already just a tracking number (alphanumeric, 8-20 chars)
+  if (/^[A-Z0-9]{8,20}$/i.test(text.trim())) {
+    return text.trim().toUpperCase();
+  }
+  
+  return null;
+}
+
+async function updateTrackingColumn(itemId, trackingNumber) {
+  try {
+    const mutation = `
+      mutation($itemId: ID!, $columnId: String!, $value: String!) {
+        change_simple_column_value(
+          item_id: $itemId,
+          board_id: ${MONDAY_BOARD_ID},
+          column_id: $columnId,
+          value: $value
+        ) {
+          id
+        }
+      }
+    `;
+    
+    await monday.api(mutation, {
+      variables: {
+        itemId: String(itemId),
+        columnId: "text6__1", // This is your customer tracking column ID
+        value: trackingNumber
+      }
+    });
+    
+    console.log(`✅ Updated tracking for item ${itemId}: ${trackingNumber}`);
+  } catch (error) {
+    console.error(`❌ Failed to update tracking for item ${itemId}:`, error);
+  }
+}
+
 async function getItemDetails(itemId) {
   const query = `query($itemIds: [ID!]) {
     items(ids: $itemIds) {
@@ -151,7 +212,7 @@ function getNameAndCompanyFromMonday(itemDetails) {
 // -------- Email (SMTP) --------
 // ✅ Updated to include part number & customer tracking
 async function sendCustomerNotificationSMTP(toEmail, toName, poNumber, deliveryIssue, location, updateText, itemDetails) {
-  const transporter = nodemailer.createTransport({
+  const transporter = nodemailer.createTransporter({
     host: SMTP_HOST,
     port: Number(SMTP_PORT),
     secure: (SMTP_SECURE || "false").toLowerCase() === "true",
@@ -259,12 +320,27 @@ async function analyzeIssue(updateText) {
 app.post("/monday-webhook", async (req, res) => {
   try {
     if (req.body?.challenge) return res.json({ challenge: req.body.challenge });
+    
     const event = req.body?.event;
     if (!event) return res.status(200).end();
+    
     const updateText = event.value?.value;
     const itemId = event.pulseId;
+    const columnId = event.columnId; // This tells us which column was updated
+    
     if (!updateText) return res.status(200).end();
+    
     console.log("Processing:", event.pulseName, "->", updateText);
+
+    // Check if this is the customer tracking column being updated with a URL
+    if (columnId === "text6__1") { // Customer tracking column
+      const trackingNumber = extractTrackingNumber(updateText);
+      if (trackingNumber && trackingNumber !== updateText.trim()) {
+        console.log(`🔍 Extracted tracking number: ${trackingNumber} from URL`);
+        await updateTrackingColumn(itemId, trackingNumber);
+        return res.status(200).end();
+      }
+    }
 
     const itemDetails = await getItemDetails(itemId);
     if (!itemDetails) return res.status(200).end();
@@ -321,7 +397,7 @@ app.get("/test", (req, res) => {
 
 app.get("/smtp-verify", async (req, res) => {
   try {
-    const transporter = nodemailer.createTransport({
+    const transporter = nodemailer.createTransporter({
       host: process.env.SMTP_HOST,
       port: Number(process.env.SMTP_PORT),
       secure: (process.env.SMTP_SECURE || "false").toLowerCase() === "true",
