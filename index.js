@@ -115,9 +115,15 @@ const AMBIGUOUS_STATUSES = {
   "clearance event": { hours: 18 },
   "customs clearance": { hours: 18 },
   "processing": { hours: 24 },
+  "import scan": { hours: 24 },
+  "arrival scan": { hours: 24 },
+  "departure scan": { hours: 48 },
   "on hold": { hours: 6 },
   "exception": { hours: 12 },
   "clearance processing": { hours: 18 },
+  "in transit": { hours: 72 }, // 3 days for in transit
+  "shipment information received": { hours: 48 },
+  "electronic information received": { hours: 24 },
 };
 
 const LOGISTICS_COORDINATORS = {
@@ -370,9 +376,10 @@ function createSlackMessage(issue, itemDetails, updateText, location, boardId) {
   const poNumber = itemDetails.poNumber;
   const coordinator = getLogisticsCoordinator(issue.route, issue.carrier, boardId);
   const carrierEmoji = issue.carrier === "UPS" ? "📦" : issue.carrier === "DHL" ? "🚚" : issue.carrier === "FedEx" ? "✈️" : "📫";
+  const aiEmoji = issue.aiAnalysis ? "🤖" : "🔍";
   const boardName = getBoardName(boardId);
   const mainMessage = `${poNumber} is ${issue.type} from ${location}. Please review.`;
-  const detailsBlock = `${carrierEmoji} Item: ${poNumber}\n📋 Board: ${boardName}\n📝 Latest Update: ${updateText}\n📍 Current Location: ${location}\n🔍 Issue Type: ${issue.type}\n⚡ Severity: ${issue.severity}\n🚛 Carrier: ${issue.carrier}\n🤖 Analysis: ${issue.reason}`;
+  const detailsBlock = `${carrierEmoji} Item: ${poNumber}\n📋 Board: ${boardName}\n📝 Latest Update: ${updateText}\n📍 Current Location: ${location}\n🔍 Issue Type: ${issue.type}\n⚡ Severity: ${issue.severity}\n🚛 Carrier: ${issue.carrier}\n${aiEmoji} Analysis: ${issue.reason}`;
   return {
     text: `${coordinator} ${mainMessage}`,
     blocks: [
@@ -424,17 +431,134 @@ function checkAmbiguousStatus(itemId, updateText) {
   return null;
 }
 
-async function analyzeIssue(updateText) {
+async function analyzeIssueWithGemini(updateText, carrier, location) {
+  if (!genAI) {
+    console.log("⚠️ Gemini API not configured, using basic analysis");
+    return await analyzeIssueBasic(updateText);
+  }
+
+  try {
+    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+    
+    const prompt = `Analyze this shipping/logistics update and determine if it indicates a problem that requires human attention.
+
+UPDATE: "${updateText}"
+CARRIER: ${carrier}
+LOCATION: ${location || "Unknown"}
+
+Respond with JSON only:
+{
+  "hasIssue": boolean,
+  "issueType": "customs_hold" | "delivery_failure" | "exception" | "delay" | "damage" | "lost" | "address_issue" | "none",
+  "severity": "low" | "medium" | "high",
+  "reason": "brief explanation",
+  "requiresAction": boolean
+}
+
+Consider these as issues:
+- Customs holds, clearance problems, document requirements
+- Failed delivery attempts, recipient issues, address problems  
+- Exceptions, holds, delays, damage, lost packages
+- Anything requiring customer or logistics team action
+
+Normal updates (delivered, in transit, departed facility) are NOT issues.`;
+
+    const result = await model.generateContent(prompt);
+    const response = await result.response;
+    const text = response.text();
+    
+    // Try to parse JSON response
+    try {
+      const analysis = JSON.parse(text.replace(/```json\n?|```\n?/g, ''));
+      
+      if (analysis.hasIssue && analysis.requiresAction) {
+        return {
+          type: analysis.issueType.replace('_', ' '),
+          severity: analysis.severity,
+          reason: `AI Analysis: ${analysis.reason}`,
+          carrier,
+          route: carrier === "UPS" ? "India-UK" : "China-UK",
+          aiAnalysis: true
+        };
+      }
+      
+      console.log(`🤖 Gemini: No issue detected - ${analysis.reason}`);
+      return null;
+      
+    } catch (parseError) {
+      console.error("Failed to parse Gemini response:", text);
+      return await analyzeIssueBasic(updateText);
+    }
+    
+  } catch (error) {
+    console.error("Gemini API error:", error);
+    return await analyzeIssueBasic(updateText);
+  }
+}
+
+async function analyzeIssueBasic(updateText) {
   const text = (updateText || "").toLowerCase();
   const carrier = detectCarrier(updateText);
-  if (text.includes("delivered")) return null;
-  if (text.includes("held by customs") || text.includes("document required")) {
-    return { type: "held in customs", severity: "high", reason: "Customs issue detected", carrier, route: carrier === "UPS" ? "India-UK" : "China-UK" };
+  
+  // Skip normal delivery completion
+  if (text.includes("delivered") && !text.includes("delivery attempted")) return null;
+  
+  // Immediate high-priority issues
+  if (text.includes("held by customs") || text.includes("document required") || 
+      text.includes("clearance required") || text.includes("customs examination")) {
+    return { 
+      type: "held in customs", 
+      severity: "high", 
+      reason: "Customs issue detected", 
+      carrier, 
+      route: carrier === "UPS" ? "India-UK" : "China-UK" 
+    };
   }
-  if (text.includes("delivery attempted") || text.includes("recipient unavailable") || text.includes("premises closed")) {
-    return { type: "experiencing delivery failure", severity: "high", reason: "Failed delivery attempt", carrier, route: carrier === "UPS" ? "India-UK" : "China-UK" };
+  
+  // Delivery failures
+  if (text.includes("delivery attempted") || text.includes("recipient unavailable") || 
+      text.includes("premises closed") || text.includes("address insufficient") ||
+      text.includes("delivery exception") || text.includes("unable to deliver")) {
+    return { 
+      type: "experiencing delivery failure", 
+      severity: "high", 
+      reason: "Failed delivery attempt detected", 
+      carrier, 
+      route: carrier === "UPS" ? "India-UK" : "China-UK" 
+    };
   }
+  
+  // Exceptions and holds
+  if (text.includes("exception") || text.includes("on hold") || 
+      text.includes("delayed") || text.includes("missent") ||
+      text.includes("damaged") || text.includes("lost")) {
+    return { 
+      type: "experiencing shipping exception", 
+      severity: "medium", 
+      reason: "Shipping exception detected", 
+      carrier, 
+      route: carrier === "UPS" ? "India-UK" : "China-UK" 
+    };
+  }
+  
+  // Weather or facility issues
+  if (text.includes("weather") || text.includes("natural disaster") || 
+      text.includes("facility issue") || text.includes("mechanical failure")) {
+    return { 
+      type: "delayed due to external factors", 
+      severity: "medium", 
+      reason: "External delay factors detected", 
+      carrier, 
+      route: carrier === "UPS" ? "India-UK" : "China-UK" 
+    };
+  }
+  
   return null;
+}
+
+// Update the main analyzeIssue function
+async function analyzeIssue(updateText, location = null) {
+  return await analyzeIssueWithGemini(updateText, detectCarrier(updateText), location);
 }
 
 app.post("/monday-webhook", async (req, res) => {
@@ -489,7 +613,7 @@ app.post("/monday-webhook", async (req, res) => {
       return res.status(200).end();
     }
 
-    const issue = await analyzeIssue(updateText);
+    const issue = await analyzeIssue(updateText, getLocationFromColumns(itemDetails.columnMap));
     if (issue) {
       const location = getLocationFromColumns(itemDetails.columnMap);
       const notify = shouldNotifyCustomer(updateText);
@@ -516,7 +640,7 @@ app.post("/monday-webhook", async (req, res) => {
       }
       const slackMessage = createSlackMessage(issue, itemDetails, updateText, location, event.boardId);
       await slack.chat.postMessage({ channel: SLACK_CHANNEL_ID, ...slackMessage });
-      console.log("Alert sent successfully");
+      console.log("Alert sent successfully" + (issue.aiAnalysis ? " (AI-detected)" : " (rule-based)"));
     }
     res.status(200).end();
   } catch (e) {
@@ -544,6 +668,28 @@ app.get("/test-monday-auth", async (req, res) => {
         user: response.data.me
       });
     }
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+app.get("/test-gemini/:text", async (req, res) => {
+  try {
+    const text = decodeURIComponent(req.params.text);
+    console.log(`🧪 Testing Gemini analysis on: "${text}"`);
+    
+    const issue = await analyzeIssueWithGemini(text, "DHL", "LONDON-UK");
+    
+    res.json({
+      success: true,
+      input: text,
+      analysis: issue,
+      geminiAvailable: !!genAI
+    });
+    
   } catch (error) {
     res.status(500).json({
       success: false,
