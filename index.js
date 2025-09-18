@@ -167,17 +167,29 @@ async function updateTrackingColumn(itemId, trackingNumber) {
       }
     `;
     
-    await monday.api(mutation, {
+    console.log(`🔄 Attempting to update item ${itemId} with tracking: ${trackingNumber}`);
+    console.log(`📋 Board ID: ${MONDAY_BOARD_ID}`);
+    console.log(`📝 Column ID: text_mkvcdqrw`);
+    
+    const response = await monday.api(mutation, {
       variables: {
         itemId: String(itemId),
-        columnId: "text_mkvcdqrw", // Customer tracking column ID
+        columnId: "text_mkvcdqrw",
         value: trackingNumber
       }
     });
     
-    console.log(`✅ Updated tracking for item ${itemId}: ${trackingNumber}`);
+    console.log(`📊 Monday.com API response:`, JSON.stringify(response, null, 2));
+    
+    if (response.errors) {
+      console.error(`❌ Monday.com API errors:`, response.errors);
+    } else {
+      console.log(`✅ Updated tracking for item ${itemId}: ${trackingNumber}`);
+    }
+    
   } catch (error) {
     console.error(`❌ Failed to update tracking for item ${itemId}:`, error);
+    console.error(`❌ Error details:`, error.message);
   }
 }
 
@@ -390,6 +402,29 @@ app.post("/monday-webhook", async (req, res) => {
   } catch (e) {
     console.error("Webhook error:", e);
     res.status(200).end();
+  }
+});
+
+app.get("/test-update/:itemId/:trackingNumber", async (req, res) => {
+  try {
+    const { itemId, trackingNumber } = req.params;
+    
+    console.log(`🧪 Test update: Item ${itemId}, Tracking: ${trackingNumber}`);
+    
+    await updateTrackingColumn(itemId, trackingNumber);
+    
+    res.json({
+      success: true,
+      message: `Attempted to update item ${itemId} with tracking ${trackingNumber}`,
+      itemId,
+      trackingNumber
+    });
+    
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
   }
 });
 
