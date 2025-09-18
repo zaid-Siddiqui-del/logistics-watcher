@@ -163,7 +163,7 @@ function getBoardConfig(boardId) {
 
 function checkAmbiguousStatus(itemId, updateText) {
   const now = Date.now();
-  const lowerText = updateText.toLowerCase();
+  const lowerText = (updateText || "").toLowerCase();
   
   let ambiguousStatus = null;
   let timeoutHours = 0;
@@ -284,7 +284,7 @@ function detectCarrier(updateText) {
 }
 
 function shouldNotifyCustomer(updateText) {
-  const text = updateText.toLowerCase();
+  const text = (updateText || "").toLowerCase();
   
   for (const [reason, pattern] of Object.entries(CUSTOMER_NOTIFICATION_PATTERNS)) {
     if (pattern.test(text)) {
@@ -525,6 +525,11 @@ function getLocationFromColumns(itemDetails, boardConfig) {
   return "Unknown Location";
 }
 
+function getLatestUpdateFromColumns(itemDetails, boardConfig) {
+  const colId = boardConfig.columns.latestUpdate;
+  return (itemDetails?.columnMap?.[colId] || "").trim();
+}
+
 async function getItemDetails(itemId, boardId) {
   try {
     console.log("Fetching item details for:", itemId, "from board:", boardId);
@@ -534,9 +539,7 @@ async function getItemDetails(itemId, boardId) {
         items(ids: $itemIds) {
           id
           name
-          board {
-            id
-          }
+          board { id }
           column_values { 
             id 
             type
@@ -653,7 +656,7 @@ function createSlackMessage(issue, itemDetails, boardConfig, updateText, locatio
     mainMessage = `**${boardConfig.name}**: ${poNumber} is ${issue.type} from ${location}. Please review.`;
   }
   
-  const detailsBlock = `${carrierEmoji} Item: ${poNumber}\n📝 Latest Update: ${updateText}\n📍 Current Location: ${location}\n🔍 Issue Type: ${issue.type}\n⚡ Severity: ${issue.severity}\n🚛 Carrier: ${issue.carrier}\n🌍 Origin: ${boardConfig.name}\n🤖 Analysis: ${issue.reason}`;
+  const detailsBlock = `${carrierEmoji} Item: ${poNumber}\n📝 Latest Update: ${updateText || "(n/a)"}\n📍 Current Location: ${location}\n🔍 Issue Type: ${issue.type}\n⚡ Severity: ${issue.severity}\n🚛 Carrier: ${issue.carrier}\n🌍 Origin: ${boardConfig.name}\n🤖 Analysis: ${issue.reason}`;
   
   return {
     text: mainMessage,
@@ -680,7 +683,7 @@ function createSlackMessage(issue, itemDetails, boardConfig, updateText, locatio
 }
 
 async function analyzeIssue(updateText) {
-  const text = updateText.toLowerCase();
+  const text = (updateText || "").toLowerCase();
   const carrier = detectCarrier(updateText);
   
   if (text.includes("delivered")) return null;
@@ -707,29 +710,28 @@ async function analyzeIssue(updateText) {
 }
 
 app.post("/monday-webhook", async (req, res) => {
-  console.log("Processing webhook:", req.body?.event?.pulseName, "->", req.body?.event?.value?.value);
-  
+  const event = req.body?.event;
+  const eventType = event?.type;
+  const boardId = event?.boardId || event?.board?.id;
+  const itemId = event?.pulseId || event?.itemId || event?.entityId;
+  const rawUpdateText = event?.value?.value; // only present for create_update
+  const changedColumnId = event?.columnId;   // present for change_column_value
+
+  console.log("Webhook type:", eventType, "| board:", boardId, "| item:", itemId);
+  if (rawUpdateText) {
+    console.log("Update text (from event):", rawUpdateText);
+  }
+  if (changedColumnId) {
+    console.log("Changed columnId:", changedColumnId);
+  }
+
   try {
     if (req.body?.challenge) {
       return res.json({ challenge: req.body.challenge });
     }
 
-    const event = req.body?.event;
-    if (!event) {
-      return res.status(200).end();
-    }
-
-    const updateText = event.value?.value;
-    const itemId = event.pulseId;
-    const boardId = event.boardId;
-
-    if (!updateText) {
-      console.log("No update text - skipping");
-      return res.status(200).end();
-    }
-
-    if (!boardId) {
-      console.log("No board ID found in webhook - skipping");
+    if (!event || !boardId || !itemId) {
+      console.log("Missing event/boardId/itemId - skipping");
       return res.status(200).end();
     }
 
@@ -742,13 +744,17 @@ app.post("/monday-webhook", async (req, res) => {
 
     console.log(`Processing webhook from ${boardConfig.name} board`);
 
+    // Always fetch fresh item details
     const itemDetails = await getItemDetails(itemId, boardId);
     if (!itemDetails) {
       return res.status(200).end();
     }
 
-    // NEW: strip links in "Customer tracking" and keep only the number
+    // Always normalize the Customer tracking column (idempotent)
     await normalizeCustomerTracking(itemDetails, boardConfig);
+
+    // Determine update text for analysis
+    const updateText = rawUpdateText || getLatestUpdateFromColumns(itemDetails, boardConfig);
 
     // Check for "stuck" status first (immediate alert)
     const stuckIssue = checkStuckStatus(itemDetails, boardConfig);
@@ -794,7 +800,7 @@ app.post("/monday-webhook", async (req, res) => {
       return res.status(200).end();
     }
 
-    // Check for immediate issues
+    // Check for immediate issues (only if we have some text to analyze)
     const issue = await analyzeIssue(updateText);
     if (issue) {
       const location = getLocationFromColumns(itemDetails, boardConfig);
