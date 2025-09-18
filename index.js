@@ -575,6 +575,71 @@ async function getItemDetails(itemId, boardId) {
   }
 }
 
+/* =========================
+   ADDED HELPERS (NEW)
+   ========================= */
+
+// --- Tracking number helpers ---
+function extractTrackingNumber(raw) {
+  if (!raw) return "";
+  const s = String(raw).trim();
+
+  // If already a plain token (no scheme/whitespace), keep it
+  if (!/^https?:\/\//i.test(s) && !/\s/.test(s)) return s;
+
+  // DHL: tracking-id=..., AWB=..., piececode=..., trackingNumber=...
+  const dhl = /(?:tracking-id|awb|piececode|trackingNumber)[=\-:]?([A-Za-z0-9]{8,35})/i;
+
+  // FedEx: tracknumbers=..., trackingNumber=...
+  const fedex = /(?:tracknumbers?|trackingNumber)[=\-:]?([A-Za-z0-9]{8,35})/i;
+
+  // UPS: tracknum=..., trackingNumber=...
+  const ups = /(?:tracknum|trackingNumber)[=\-:]?([A-Za-z0-9]{8,35})/i;
+
+  // Generic fallback: last token-ish segment
+  const generic = /(?:\/|=)([A-Za-z0-9]{8,35})(?:[\/&?#]|$)/;
+
+  for (const rx of [dhl, fedex, ups, generic]) {
+    const m = s.match(rx);
+    if (m && m[1]) return m[1];
+  }
+  return s; // fallback
+}
+
+async function normalizeCustomerTracking(itemDetails, boardConfig) {
+  try {
+    const colId = boardConfig.columns.customerTracking;
+    if (!colId) return;
+
+    const current = itemDetails?.columnMap?.[colId] || "";
+    if (!current) return;
+
+    const cleaned = extractTrackingNumber(current);
+    if (!cleaned || cleaned === current) return; // nothing to do
+
+    const mutation = `
+      mutation SetPlainTracking($itemId: ID!, $columnId: String!, $value: String!) {
+        change_simple_column_value(item_id: $itemId, column_id: $columnId, value: $value) { id }
+      }
+    `;
+
+    await monday.api(mutation, {
+      variables: {
+        itemId: String(itemDetails.id),
+        columnId: colId,
+        value: cleaned
+      }
+    });
+
+    console.log(`Normalized tracking for item ${itemDetails.id}: "${current}" -> "${cleaned}"`);
+  } catch (e) {
+    console.error("Failed to normalize customer tracking:", e.message);
+  }
+}
+/* =========================
+   END ADDED HELPERS
+   ========================= */
+
 function createSlackMessage(issue, itemDetails, boardConfig, updateText, location) {
   const poNumber = itemDetails.poNumber;
   const coordinator = getLogisticsCoordinator(boardConfig, itemDetails);
@@ -681,6 +746,9 @@ app.post("/monday-webhook", async (req, res) => {
     if (!itemDetails) {
       return res.status(200).end();
     }
+
+    // NEW: strip links in "Customer tracking" and keep only the number
+    await normalizeCustomerTracking(itemDetails, boardConfig);
 
     // Check for "stuck" status first (immediate alert)
     const stuckIssue = checkStuckStatus(itemDetails, boardConfig);
