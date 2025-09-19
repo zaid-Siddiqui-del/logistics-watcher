@@ -517,13 +517,23 @@ Respond with JSON only:
   "requiresAction": boolean
 }
 
-Consider these as issues:
+Consider these as NORMAL (NOT issues):
+- "shipment information received/sent"
+- "electronic information received"
+- "label created"
+- "package received"
+- "origin scan", "departure scan", "arrival scan"
+- "in transit", "out for delivery"
+- "departed facility"
+- "delivered" (unless delivery attempted)
+
+Consider these as ISSUES requiring action:
 - Customs holds, clearance problems, document requirements
 - Failed delivery attempts, recipient issues, address problems  
 - Exceptions, holds, delays, damage, lost packages
 - Anything requiring customer or logistics team action
 
-Normal updates (delivered, in transit, departed facility) are NOT issues.`;
+Normal tracking updates are NOT issues.`;
 
     const result = await model.generateContent(prompt);
     const response = await result.response;
@@ -564,6 +574,17 @@ async function analyzeIssueBasic(updateText) {
   
   // Skip normal delivery completion
   if (text.includes("delivered") && !text.includes("delivery attempted")) return null;
+  
+  // Skip normal shipment information updates
+  if (text.includes("shipment information received") || 
+      text.includes("shipment information sent") ||
+      text.includes("electronic information received") ||
+      text.includes("label created") ||
+      text.includes("package received") ||
+      text.includes("origin scan") ||
+      text.includes("departed facility") ||
+      text.includes("arrival scan") ||
+      text.includes("in transit")) return null;
   
   // Immediate high-priority issues
   if (text.includes("held by customs") || text.includes("document required") || 
@@ -634,7 +655,20 @@ app.post("/monday-webhook", async (req, res) => {
     const itemId = event.pulseId;
     const columnId = event.columnId; // This tells us which column was updated
     
-    if (!updateText) return res.status(200).end();
+    // Enhanced debugging - log the entire request body
+    console.log("=== WEBHOOK DEBUG START ===");
+    console.log("Full request body:", JSON.stringify(req.body, null, 2));
+    console.log("Event object:", JSON.stringify(event, null, 2));
+    console.log("Update text:", updateText);
+    console.log("Item ID:", itemId);
+    console.log("Column ID:", columnId);
+    console.log("Board ID:", event.boardId);
+    console.log("=== WEBHOOK DEBUG END ===");
+    
+    if (!updateText) {
+      console.log("❌ No update text provided, ending");
+      return res.status(200).end();
+    }
     
     console.log("Processing:", event.pulseName, "->", updateText);
     console.log("Column ID:", columnId);
@@ -655,9 +689,16 @@ app.post("/monday-webhook", async (req, res) => {
     const trackingColumnId = getTrackingColumnId(event.boardId);
     const isTrackingColumn = columnId === trackingColumnId;
     
+    console.log(`🔍 Is this from tracking column? ${isTrackingColumn} (expected: ${trackingColumnId}, actual: ${columnId})`);
+    
     // Extract tracking numbers from URLs (only from Customer Tracking columns)
     if (isTrackingColumn) {
+      console.log("🎯 Processing tracking column update");
       const trackingNumber = extractTrackingNumber(updateText);
+      console.log("🔍 Extracted tracking number:", trackingNumber);
+      console.log("🔍 Original text:", updateText);
+      console.log("🔍 Are they different?", trackingNumber !== updateText.trim());
+      
       if (trackingNumber && trackingNumber !== updateText.trim()) {
         console.log(`🔍 Extracted tracking number: ${trackingNumber} from URL in Customer Tracking column`);
         console.log(`📍 Original URL will remain in Customer Tracking column: ${trackingColumnId}`);
@@ -674,7 +715,11 @@ app.post("/monday-webhook", async (req, res) => {
         }
         
         return res.status(200).end();
+      } else {
+        console.log("❌ No tracking number extracted or same as original text");
       }
+    } else {
+      console.log("❌ Not from tracking column, continuing with normal processing");
     }
 
     const itemDetails = await getItemDetails(itemId);
@@ -788,6 +833,29 @@ app.get("/test-update/:itemId/:trackingNumber", async (req, res) => {
       message: `Attempted to update item ${itemId} with tracking ${trackingNumber}`,
       itemId,
       trackingNumber
+    });
+    
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+app.get("/test-extract/:text", async (req, res) => {
+  try {
+    const text = decodeURIComponent(req.params.text);
+    console.log(`🧪 Testing extraction on: "${text}"`);
+    
+    const trackingNumber = extractTrackingNumber(text);
+    
+    res.json({
+      success: true,
+      originalText: text,
+      extractedNumber: trackingNumber,
+      isDifferent: trackingNumber !== text.trim(),
+      willTriggerUpdate: !!(trackingNumber && trackingNumber !== text.trim())
     });
     
   } catch (error) {
