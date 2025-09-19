@@ -115,11 +115,19 @@ app.post("/monday-webhook", async (req, res) => {
       const trackingNumber = extractTrackingNumber(updateText);
       if (trackingNumber && trackingNumber !== updateText.trim()) {
         console.log(`🔍 Extracted tracking number: ${trackingNumber} from URL in Customer Tracking column`);
-        console.log(`📍 Original URL will remain in Customer Tracking column`);
+        console.log(`📍 Original URL will remain in Customer Tracking column: ${trackingColumnId}`);
         console.log(`📍 Tracking number will be added to Duplicate Tracking column`);
         
-        // Update the duplicate tracking column with just the tracking number
-        await updateDuplicateTrackingColumn(itemId, trackingNumber, event.boardId);
+        // Check if this board has a duplicate tracking column
+        const duplicateColumnId = getDuplicateTrackingColumnId(event.boardId);
+        if (duplicateColumnId) {
+          console.log(`📍 Updating duplicate tracking column: ${duplicateColumnId}`);
+          // Update the duplicate tracking column with just the tracking number
+          await updateDuplicateTrackingColumn(itemId, trackingNumber, event.boardId);
+        } else {
+          console.log(`⚠️ Board ${getBoardName(event.boardId)} doesn't have duplicate tracking column configured`);
+        }
+        
         return res.status(200).end();
       }
     }
