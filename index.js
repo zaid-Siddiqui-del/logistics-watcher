@@ -12,8 +12,16 @@ const TRACKING_COLUMN_IDS = {
   [BOARDS.INDIA]: "text_mkvcce8m"
 };
 
-// New column for duplicate tracking (tracking numbers only)
-const DUP_TRACKING_COLUMN_ID = "text_mkvyqp0a"; // Same for all boards
+// Board-specific column IDs for duplicate tracking (tracking numbers only)
+const DUP_TRACKING_COLUMN_IDS = {
+  [BOARDS.CHINA]: "text_mkvyqp0a", // Only China board has this column
+  // Other boards don't have duplicate tracking columns yet
+};
+
+// Function to get the duplicate tracking column ID for a board (if it exists)
+function getDuplicateTrackingColumnId(boardId) {
+  return DUP_TRACKING_COLUMN_IDS[String(boardId)] || null;
+}
 
 // Function to get the correct tracking column ID for a board
 function getTrackingColumnId(boardId) {
@@ -23,6 +31,13 @@ function getTrackingColumnId(boardId) {
 // Updated function to update the duplicate tracking column with just the tracking number
 async function updateDuplicateTrackingColumn(itemId, trackingNumber, boardId = MONDAY_BOARD_ID) {
   try {
+    const duplicateColumnId = getDuplicateTrackingColumnId(boardId);
+    
+    if (!duplicateColumnId) {
+      console.log(`⚠️ No duplicate tracking column configured for ${getBoardName(boardId)} - skipping duplicate update`);
+      return;
+    }
+    
     const mutation = `
       mutation($itemId: ID!, $boardId: ID!, $columnId: String!, $value: String!) {
         change_simple_column_value(
@@ -38,13 +53,13 @@ async function updateDuplicateTrackingColumn(itemId, trackingNumber, boardId = M
     
     console.log(`🔄 Updating duplicate tracking column for item ${itemId} with tracking: ${trackingNumber}`);
     console.log(`📋 Board: ${getBoardName(boardId)} (${boardId})`);
-    console.log(`📝 Duplicate Column ID: ${DUP_TRACKING_COLUMN_ID}`);
+    console.log(`📝 Duplicate Column ID: ${duplicateColumnId}`);
     
     const response = await monday.api(mutation, {
       variables: {
         itemId: String(itemId),
         boardId: String(boardId),
-        columnId: DUP_TRACKING_COLUMN_ID,
+        columnId: duplicateColumnId,
         value: trackingNumber
       }
     });
@@ -173,7 +188,8 @@ app.get("/test-dup-update/:itemId/:trackingNumber", async (req, res) => {
       message: `Attempted to update duplicate tracking for item ${itemId} with tracking ${trackingNumber}`,
       itemId,
       trackingNumber,
-      columnId: DUP_TRACKING_COLUMN_ID
+      columnId: getDuplicateTrackingColumnId(MONDAY_BOARD_ID),
+      boardSupported: !!getDuplicateTrackingColumnId(MONDAY_BOARD_ID)
     });
     
   } catch (error) {
