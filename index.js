@@ -51,9 +51,9 @@ const DUP_TRACKING_COLUMN_IDS = {
 
 // Board-specific column IDs for location tracking
 const LOCATION_COLUMN_IDS = {
-  [BOARDS.MAIN]: "text5__1",     // Update this with correct column ID for Main board
-  [BOARDS.CHINA]: "text5__1",    // Update this with correct column ID for China board  
-  [BOARDS.INDIA]: "text5__1"     // Update this with correct column ID for India board
+  [BOARDS.MAIN]: "text5__1",        // Main board (already working)
+  [BOARDS.CHINA]: "text_mkvc8tw8",  // China board - Updated
+  [BOARDS.INDIA]: "text_mkvcg0xs"   // India board - Updated
 };
 
 // Function to get board name for logging
