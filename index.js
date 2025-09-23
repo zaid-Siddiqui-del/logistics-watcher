@@ -49,6 +49,13 @@ const DUP_TRACKING_COLUMN_IDS = {
   // Other boards don't have duplicate tracking columns yet
 };
 
+// Board-specific column IDs for location tracking
+const LOCATION_COLUMN_IDS = {
+  [BOARDS.MAIN]: "text5__1",     // Update this with correct column ID for Main board
+  [BOARDS.CHINA]: "text5__1",    // Update this with correct column ID for China board  
+  [BOARDS.INDIA]: "text5__1"     // Update this with correct column ID for India board
+};
+
 // Function to get board name for logging
 function getBoardName(boardId) {
   const boardIdStr = String(boardId);
@@ -68,6 +75,11 @@ function getTrackingColumnId(boardId) {
 // Function to get the duplicate tracking column ID for a board (if it exists)
 function getDuplicateTrackingColumnId(boardId) {
   return DUP_TRACKING_COLUMN_IDS[String(boardId)] || null;
+}
+
+// Function to get the correct location column ID for a board
+function getLocationColumnId(boardId) {
+  return LOCATION_COLUMN_IDS[String(boardId)] || "text5__1"; // fallback to current column ID
 }
 
 console.log("Environment variables loaded:");
@@ -383,8 +395,13 @@ async function getItemDetails(itemId) {
   return { id: item.id, name: item.name, columnMap, poNumber: item.name };
 }
 
-function getLocationFromColumns(columnMap) {
-  return columnMap["text5__1"] || "Unknown Location";
+// Updated function to get location from columns using board-specific column ID
+function getLocationFromColumns(columnMap, boardId = MONDAY_BOARD_ID) {
+  const locationColumnId = getLocationColumnId(boardId);
+  console.log(`🗺️ Looking for location in column ${locationColumnId} for board ${getBoardName(boardId)}`);
+  const location = columnMap[locationColumnId] || "Unknown Location";
+  console.log(`📍 Found location: ${location}`);
+  return location;
 }
 
 function getNameAndCompanyFromMonday(itemDetails) {
@@ -727,7 +744,7 @@ app.post("/monday-webhook", async (req, res) => {
 
     const ambiguousIssue = checkAmbiguousStatus(itemId, updateText);
     if (ambiguousIssue) {
-      const location = getLocationFromColumns(itemDetails.columnMap);
+      const location = getLocationFromColumns(itemDetails.columnMap, event.boardId);
       const slackMessage = createSlackMessage(ambiguousIssue, itemDetails, updateText, location, event.boardId);
       try {
         await slack.chat.postMessage({ channel: SLACK_CHANNEL_ID, ...slackMessage });
@@ -735,9 +752,9 @@ app.post("/monday-webhook", async (req, res) => {
       return res.status(200).end();
     }
 
-    const issue = await analyzeIssue(updateText, getLocationFromColumns(itemDetails.columnMap));
+    const issue = await analyzeIssue(updateText, getLocationFromColumns(itemDetails.columnMap, event.boardId));
     if (issue) {
-      const location = getLocationFromColumns(itemDetails.columnMap);
+      const location = getLocationFromColumns(itemDetails.columnMap, event.boardId);
       const notify = shouldNotifyCustomer(updateText);
       if (notify.shouldNotify) {
         const { name, company } = getNameAndCompanyFromMonday(itemDetails);
@@ -914,6 +931,47 @@ app.get("/debug-columns/:itemId", async (req, res) => {
   }
 });
 
+// Debug endpoint to help find location column IDs
+app.get("/debug-location/:itemId", async (req, res) => {
+  try {
+    const itemId = req.params.itemId;
+    const itemDetails = await getItemDetails(itemId);
+    
+    if (!itemDetails) {
+      return res.status(404).send("Item not found");
+    }
+    
+    // Show all columns and highlight potential location columns
+    const columnInfo = itemDetails.columnMap;
+    const potentialLocationColumns = {};
+    
+    // Look for columns that might contain location data
+    Object.keys(columnInfo).forEach(columnId => {
+      const value = columnInfo[columnId];
+      if (value && (
+        value.toLowerCase().includes('location') ||
+        value.toLowerCase().includes('city') ||
+        value.toLowerCase().includes('country') ||
+        value.includes('-') && value.length > 5 // Might be location format like "LONDON-UK"
+      )) {
+        potentialLocationColumns[columnId] = value;
+      }
+    });
+    
+    res.json({
+      itemId,
+      itemName: itemDetails.name,
+      currentLocationColumnUsed: "text5__1",
+      currentLocationValue: columnInfo["text5__1"] || "Not found",
+      potentialLocationColumns,
+      allColumns: columnInfo,
+      note: "Check 'potentialLocationColumns' for the correct location column ID"
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 app.get("/test", (req, res) => {
   res.send("Logistics watcher is running! " + new Date().toISOString());
 });
@@ -936,4 +994,3 @@ app.get("/smtp-verify", async (req, res) => {
 app.listen(PORT, () => {
   console.log(`Watcher listening on ${PORT}`);
 });
-
